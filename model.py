@@ -4,7 +4,13 @@ import itertools
 import copy
 import pandas as pd
 import decimal
-# import numpy as np
+import numpy as np
+
+import matplotlib.pyplot as plt
+import random
+from functools import reduce
+
+
 
 class Model:
     # input nets in the following form:
@@ -50,7 +56,7 @@ class Model:
     #
     #         self.nodes[node].update({'edges': edges})
 
-    def _make_dataframe(self, answer):
+    def _make_dataframe(self, answer, type=None):
 
         string = ''.join(answer[0]['vars'])
 
@@ -64,8 +70,13 @@ class Model:
         df = pd.DataFrame(index=[0, 1], columns=columns)
         df.iat[0,0] = string + '_0'  #index (row), column
         df.iat[1,0] = string + '_1'
-        df.iat[0,1] = round(ans_0, 4)
-        df.iat[1, 1] = round(ans_1, 4)
+        df.iat[0,1] = round(ans_0, 3)
+        df.iat[1, 1] = round(ans_1, 3)
+        if type == 'VE':
+            df.index.name = 'VE'
+        elif type == 'Gibbs':
+            df.index.name = 'Gibbs'
+
         return df
         # prob_list = []
         # label = []
@@ -118,9 +129,12 @@ class Model:
                 print("Unknown evidence: {}".format(key))
                 sys.exit(1)
 
-        self._make_factors()
-        # self.prettyPrint(self.factors)
+        # self. prettyPrint(self.nodes)
 
+        self._make_factors()
+        # self. prettyPrint(self.factors)
+
+    # ---------------------- VE -----------------------------
         if e != None:
             self.factors = self._update_factor_e(e, self.factors)
 
@@ -149,7 +163,46 @@ class Model:
             ans_cpt.append(self._normalize(ans_cpt[0]))
             del ans_cpt[0]
 
-        return self._make_dataframe(ans_cpt)
+        # return self._make_dataframe(ans_cpt)
+    # ---------------------- END VE -----------------------------
+
+    # --------------------- GIBBS -------------------------------
+        self._make_factors()
+        # print("make factors again")
+        # self. prettyPrint(self.factors)
+
+        all_variables = list(self.nodes.keys())
+
+        gibbs_query, exp_result, tstep = _gibbs_sampling(Y, e, self.factors, all_variables)
+
+        exp_result_array = np.asarray(exp_result)
+        time_step_array = np.asarray(tstep)
+
+        actual_value = ans_cpt[0]['Pr'][1]
+
+        fig = plt.figure()
+        ax = plt.axes()
+        plt.axhline(y=actual_value, color='r', linestyle='-')
+        plt.plot(time_step_array, exp_result_array)
+        plt.xlabel("Sampling Time Steps")
+        plt.ylabel("Expected Value of Query");
+
+
+        value_limited = actual_value - actual_value % 0.001
+        for i in exp_result:
+            if value_limited <= i < (value_limited+0.001):
+                idx = exp_result.index(i)
+                break
+            else:
+                idx = len(tstep) - 1
+
+        print("Sampler appear to first reach exact solution at timestep:", tstep[idx])
+
+
+    # -------------------------- END GIBBS ------
+        # print(self._make_dataframe(ans_cpt, type = 'VE'))
+        GB = self._make_dataframe(gibbs_query, type = 'Gibbs')
+        return GB
 
     def _norm_multiply(self, f1, f2):
         final_Pr = []
@@ -171,9 +224,6 @@ class Model:
         Pr_result['Pr'] = Pr_final
 
         return Pr_result
-
-
-
 
 
     def _make_factors(self):
@@ -299,6 +349,145 @@ class Model:
 
 
 # ----- Non Class Private Methods ----- #
+def _gibbs_sampling(Y, e, factors, varlist, num_samples = 900000, burn_in = 5000, k = 5):
+    # computes P(Y|e) where
+    # Y is a query variable.
+    # e is the evidence variable:value dictionary
+
+    # list of all variables in network except evidence variables
+    variables = varlist
+    for item in list(e.keys()):
+        variables.remove(item)
+
+
+    #  nodes --> dict {A: 0, J: O, K: 1} of all variables
+    nodes = dict.fromkeys(varlist, None)
+    nodes.update(e)
+
+    # randomly instantiate non-evidence variables
+    for key in nodes:
+        if key in variables:
+            val = random.randint(0, 1)
+            # nodes[key] = val
+            nodes[key] = 1
+
+
+    expected_values = []  # list of expected values of query at each time step
+    query_values = [] # list of probabilitity values
+    query_values_bool = []
+
+    t_range = num_samples + burn_in
+    thinning_list = list(range(burn_in, t_range))
+    thinning = []
+    thinning = thinning_list[0::k]
+
+    time_step = []
+    counter = 0
+
+    for i in range(num_samples + burn_in):
+        random.shuffle(variables)  # not sure if needed
+        for var in variables:  # iterate through each non-evidence variable
+
+            # get probability distribution of var given its markov blanket
+            # print("CURRENT", var)
+
+            fct_list = []
+            for factor in factors:
+                for v in factor['vars']:
+                    if v == var:
+                        fct_list.append(factor)
+
+            value = _get_value(fct_list, nodes, var)
+            # _get_value(fct_list, nodes, var)
+    #
+            # sample
+            rand = random.random()
+
+            # update node value
+            if value >= rand:
+                nodes[var] = 1
+            else:
+                nodes[var] = 0
+
+            if i >= burn_in and i % k == 0:
+                if var == Y:      # if current var is the varible being queried, and if var == 1, append probability value to list
+                    counter += 1
+                    if nodes[var] == 1:
+                        # query_values.append(value)
+                        query_values.append(1)
+
+
+        #
+        # calculate current expcted value
+        if i >= burn_in and i % k == 0:
+            current_exp = sum(query_values)/(counter)
+            expected_values.append(current_exp)
+            time_step.append(i)
+
+    n = burn_in
+    query_burn = query_values
+    total_samples = num_samples - burn_in
+    query_pr = sum(query_values)/(len(thinning))
+
+    pr = []
+    pr.append(1-query_pr)
+    pr.append(query_pr)
+    queryvar = [Y]
+    result_dict = {'Pr': pr, 'vars': queryvar}
+
+    result = []
+    result.append(result_dict)
+
+
+    return result, expected_values, time_step
+
+
+
+def _get_value(flist, nodes, var):
+
+    var_t = []
+    var_f = []
+    # print("NODES NODES NODES", nodes)
+    temp_nodes = nodes
+    for l in flist:  # for each
+
+        node_index = []
+        # calculate Pr for var = TRUE
+        temp_nodes[var] = 1
+        for item in l['vars']:
+            node_index.append(temp_nodes[item])
+
+        cpt_index = _getpattern(len(l['vars']))
+        pr_index = cpt_index.index(node_index)
+        var_t.append(l['Pr'][pr_index])
+
+        node_index = []
+        # calculate Pr for var = FALSE
+        temp_nodes[var] = 0
+        for item in l['vars']:
+            node_index.append(temp_nodes[item])
+
+        pr_index_f = cpt_index.index(node_index)
+        var_f.append(l['Pr'][pr_index_f])
+
+
+
+    # calculate value
+
+    multiply_true = reduce(lambda x, y: x*y, var_t)
+    multiply_false = reduce(lambda x, y: x*y, var_f)
+    # print('multiply_true', multiply_true)
+    # print('multiply_false', multiply_false)
+    sum_pr = (multiply_true + multiply_false)
+    # print('sum_pr', sum_pr)
+    # if sum_pr == 0:
+    #     pr_true = 0
+    # else:
+    pr_true  = multiply_true/sum_pr
+
+    return pr_true
+
+
 def _var_elim(Y, e, factors, elim_order=None):
 
     elim_list = elim_order
