@@ -70,12 +70,18 @@ class Model:
         df = pd.DataFrame(index=[0, 1], columns=columns)
         df.iat[0,0] = string + '_0'  #index (row), column
         df.iat[1,0] = string + '_1'
-        df.iat[0,1] = round(ans_0, 3)
-        df.iat[1, 1] = round(ans_1, 3)
-        if type == 'VE':
-            df.index.name = 'VE'
-        elif type == 'Gibbs':
+        if type == 'Gibbs':
+            df.iat[0,1] = round(ans_0, 3)
+            df.iat[1, 1] = round(ans_1, 3)
             df.index.name = 'Gibbs'
+        elif type == 'VE':
+            df.iat[0,1] = round(ans_0, 4)
+            df.iat[1, 1] = round(ans_1, 4)
+            df.index.name = 'VE'
+        # if type == 'VE':
+        #     df.index.name = 'VE'
+        # elif type == 'Gibbs':
+        #     df.index.name = 'Gibbs'
 
         return df
         # prob_list = []
@@ -114,7 +120,7 @@ class Model:
 
 
     # Query Format: myModel.query('J', e={'G': 0, 'R': 1})
-    def query(self, Y, e=None):
+    def query(self, Y, inf_type='VE', e=None):
         # P(Y)
         # P(Y| e = e1)
         if not Y:
@@ -163,7 +169,9 @@ class Model:
             ans_cpt.append(self._normalize(ans_cpt[0]))
             del ans_cpt[0]
 
-        # return self._make_dataframe(ans_cpt)
+        if inf_type=='VE':
+            return self._make_dataframe(ans_cpt, type = 'VE')
+
     # ---------------------- END VE -----------------------------
 
     # --------------------- GIBBS -------------------------------
